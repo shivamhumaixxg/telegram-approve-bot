@@ -84,7 +84,7 @@ async def start_cmd(client: Client, message: Message):
     ])
 
     text = (
-        f"👋 <b>Assalamu Alaikum {user.first_name}!</b>\n\n"
+        f"👋 <b>ram ram Bhai {user.first_name}!</b>\n\n"
         f"Main hoon <b>Request Approve Bot</b> 🤖\n\n"
         f"🔹 Mujhe Channel ya Group mein add karo\n"
         f"🔹 Main automatically join requests approve karunga\n"
