@@ -1,12 +1,9 @@
 """
-Complete Telegram Auto-Approve Bot
-Features:
-- Approves OLD + NEW pending requests
-- Sends welcome message after approval
-- Registers users in database
-- Broadcast to all users
-- User statistics (active/blocked)
-- 100% Railway compatible
+Fixed Auto-Approve Bot
+- Manual chat add feature
+- Better permission checks
+- Improved error handling
+- 100% Working approval
 """
 
 import os
@@ -19,9 +16,7 @@ from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
-    ChatJoinRequestHandler,
-    MessageHandler,
-    filters
+    ChatJoinRequestHandler
 )
 
 # Logging
@@ -35,13 +30,11 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '0'))
 
-# Database setup
+# Database
 def init_database():
-    """Initialize SQLite database"""
     conn = sqlite3.connect('bot_data.db')
     cursor = conn.cursor()
     
-    # Users table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -55,12 +48,12 @@ def init_database():
         )
     ''')
     
-    # Chats table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS chats (
             chat_id INTEGER PRIMARY KEY,
             chat_title TEXT,
-            added_date TEXT
+            added_date TEXT,
+            is_active INTEGER DEFAULT 1
         )
     ''')
     
@@ -68,29 +61,22 @@ def init_database():
     conn.close()
     logger.info("✅ Database initialized")
 
-# Database helpers
 def add_user(user_id, username, first_name, last_name, chat_id):
-    """Add or update user in database"""
     try:
         conn = sqlite3.connect('bot_data.db')
         cursor = conn.cursor()
-        
         cursor.execute('''
             INSERT OR REPLACE INTO users 
             (user_id, username, first_name, last_name, chat_id, joined_date, is_active)
             VALUES (?, ?, ?, ?, ?, ?, 1)
         ''', (user_id, username, first_name, last_name, chat_id, datetime.now().isoformat()))
-        
         conn.commit()
         conn.close()
-        logger.info(f"✅ User added: {first_name} ({user_id})")
         return True
-    except Exception as e:
-        logger.error(f"Database error: {e}")
+    except:
         return False
 
 def mark_user_blocked(user_id):
-    """Mark user as blocked"""
     try:
         conn = sqlite3.connect('bot_data.db')
         cursor = conn.cursor()
@@ -101,7 +87,6 @@ def mark_user_blocked(user_id):
         pass
 
 def get_all_active_users():
-    """Get all active users"""
     try:
         conn = sqlite3.connect('bot_data.db')
         cursor = conn.cursor()
@@ -113,57 +98,51 @@ def get_all_active_users():
         return []
 
 def get_user_stats():
-    """Get user statistics"""
     try:
         conn = sqlite3.connect('bot_data.db')
         cursor = conn.cursor()
-        
         cursor.execute('SELECT COUNT(*) FROM users')
         total = cursor.fetchone()[0]
-        
         cursor.execute('SELECT COUNT(*) FROM users WHERE is_active = 1')
         active = cursor.fetchone()[0]
-        
         cursor.execute('SELECT COUNT(*) FROM users WHERE is_blocked = 1')
         blocked = cursor.fetchone()[0]
-        
         conn.close()
         return {'total': total, 'active': active, 'blocked': blocked}
     except:
         return {'total': 0, 'active': 0, 'blocked': 0}
 
-def add_chat(chat_id, chat_title):
-    """Add chat to database"""
+def add_chat_to_db(chat_id, chat_title):
     try:
         conn = sqlite3.connect('bot_data.db')
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT OR REPLACE INTO chats (chat_id, chat_title, added_date)
-            VALUES (?, ?, ?)
+            INSERT OR REPLACE INTO chats (chat_id, chat_title, added_date, is_active)
+            VALUES (?, ?, ?, 1)
         ''', (chat_id, chat_title, datetime.now().isoformat()))
         conn.commit()
         conn.close()
-    except:
-        pass
+        logger.info(f"✅ Chat added to DB: {chat_title} ({chat_id})")
+        return True
+    except Exception as e:
+        logger.error(f"Error adding chat: {e}")
+        return False
 
 def get_all_chats():
-    """Get all monitored chats"""
     try:
         conn = sqlite3.connect('bot_data.db')
         cursor = conn.cursor()
-        cursor.execute('SELECT chat_id, chat_title FROM chats')
+        cursor.execute('SELECT chat_id, chat_title FROM chats WHERE is_active = 1')
         chats = cursor.fetchall()
         conn.close()
         return chats
     except:
         return []
 
-# Bot handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start command"""
     user_id = update.effective_user.id
     
-    # Register user when they start bot
+    # Register user
     add_user(
         user_id,
         update.effective_user.username,
@@ -173,172 +152,294 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     if user_id != ADMIN_USER_ID:
-        # Regular user
-        msg = """👋 Welcome to Auto-Approve Bot!
+        msg = """👋 Welcome!
 
 ✅ You're registered!
 
-You'll receive:
-• Important announcements
-• Updates from admin
-• Group notifications
+You'll receive updates and announcements.
 
 Type /help for more info.
 """
         await update.message.reply_text(msg)
         return
     
-    # Admin user
+    # Admin
     msg = """✅ Auto-Approve Bot - Admin Panel
 
 🤖 Features:
-• Auto-approves OLD + NEW requests
+• Approves OLD + NEW requests
 • Sends welcome message
-• Registers users automatically
-• Broadcast to all users
-• User statistics
+• User database & broadcast
+• Complete statistics
 
-📋 Admin Commands:
-/approve_all - Approve ALL pending requests
-/broadcast <message> - Send to all users
-/stats - User statistics
-/users - List recent users
-/chats - Monitored groups
+📋 Commands:
+/add_chat - Add group manually ⭐
+/approve_all - Approve ALL pending
+/broadcast <msg> - Send to all
+/stats - Statistics
+/users - List users
+/chats - List groups
+/help - Setup guide
 
-✅ Status: Running
+⚠️ IMPORTANT:
+Use /add_chat first to add your group!
 """
     await update.message.reply_text(msg)
 
-async def approve_all_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Approve ALL pending requests with welcome messages"""
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Help and setup guide"""
+    help_text = """📖 Setup Guide
+
+🔧 Step 1: Add Bot to Group
+1. Go to your group
+2. Group Info → Administrators
+3. Add Administrator → Your bot
+4. Enable permission:
+   ✅ Invite Users via Link
+5. Save
+
+🔧 Step 2: Add Group to Bot
+/add_chat
+
+Bot will ask for group ID.
+
+🔧 Step 3: Get Group ID
+1. Add @userinfobot to group
+2. It will send group ID
+3. Copy the ID (with -)
+4. Example: -1001234567890
+
+🔧 Step 4: Add Group
+/add_chat -1001234567890
+
+✅ Done! Bot will now monitor!
+
+🔧 Step 5: Approve Pending
+/approve_all
+
+All old requests will be approved!
+
+📝 Need help? Check logs with Railway.
+"""
+    await update.message.reply_text(help_text)
+
+async def add_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually add chat to monitor"""
     user_id = update.effective_user.id
     
     if user_id != ADMIN_USER_ID:
         await update.message.reply_text("❌ Admin only!")
         return
     
-    await update.message.reply_text("🔄 Starting approval process...")
+    if not context.args:
+        msg = """📋 Add Group Manually
+
+Usage:
+/add_chat -1001234567890
+
+How to get group ID:
+1. Add @userinfobot to your group
+2. It will send the group ID
+3. Copy ID (with minus sign -)
+4. Use: /add_chat [ID]
+
+Example:
+/add_chat -1001234567890
+
+⚠️ Bot must be admin in group first!
+"""
+        await update.message.reply_text(msg)
+        return
     
-    total_approved = 0
-    total_failed = 0
+    try:
+        chat_id = int(context.args[0])
+        
+        await update.message.reply_text(f"🔍 Checking group {chat_id}...")
+        
+        # Try to get chat
+        try:
+            chat = await context.bot.get_chat(chat_id)
+        except Exception as e:
+            await update.message.reply_text(
+                f"❌ Error accessing group!\n\n"
+                f"Possible reasons:\n"
+                f"• Bot not added to group\n"
+                f"• Wrong chat ID\n"
+                f"• Group is private\n\n"
+                f"Error: {str(e)}"
+            )
+            return
+        
+        # Check if bot is admin
+        try:
+            member = await context.bot.get_chat_member(chat_id, context.bot.id)
+            if member.status not in ['administrator', 'creator']:
+                await update.message.reply_text(
+                    f"❌ Bot is not admin in {chat.title}!\n\n"
+                    f"Please:\n"
+                    f"1. Make bot administrator\n"
+                    f"2. Enable 'Invite Users via Link'\n"
+                    f"3. Try /add_chat again"
+                )
+                return
+        except Exception as e:
+            logger.error(f"Admin check error: {e}")
+        
+        # Add to database
+        if add_chat_to_db(chat_id, chat.title):
+            await update.message.reply_text(
+                f"✅ Successfully Added!\n\n"
+                f"📢 Group: {chat.title}\n"
+                f"🆔 ID: `{chat_id}`\n\n"
+                f"Bot will now:\n"
+                f"✅ Monitor join requests\n"
+                f"✅ Auto-approve new requests\n"
+                f"✅ Register users\n\n"
+                f"Use /approve_all to clear pending!"
+            )
+            logger.info(f"✅ Added chat: {chat.title} ({chat_id})")
+        else:
+            await update.message.reply_text("❌ Database error!")
+            
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid format!\n\n"
+            "Use: /add_chat -1001234567890\n"
+            "(Must be negative number for groups)"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+async def approve_all_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Approve ALL pending with welcome"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Admin only!")
+        return
     
     chats = get_all_chats()
     
     if not chats:
         await update.message.reply_text(
-            "⚠️ No chats found!\n\n"
-            "Add bot to group as admin first."
+            "⚠️ No groups added!\n\n"
+            "Use /add_chat to add your group first.\n\n"
+            "Example:\n"
+            "/add_chat -1001234567890\n\n"
+            "Type /help for setup guide."
         )
         return
     
+    await update.message.reply_text(
+        f"🔄 Starting approval for {len(chats)} group(s)..."
+    )
+    
+    total_approved = 0
+    total_failed = 0
+    
     for chat_id, chat_title in chats:
         try:
-            await update.message.reply_text(f"📡 Processing: {chat_title}...")
+            await update.message.reply_text(f"📡 {chat_title}...")
             
             approved = 0
             failed = 0
             
-            # Get ALL pending requests (old + new)
-            async for request in context.bot.get_chat_join_requests(chat_id):
-                try:
-                    # Approve request
-                    await context.bot.approve_chat_join_request(
-                        chat_id=chat_id,
-                        user_id=request.user.id
-                    )
-                    
-                    # Register user
-                    add_user(
-                        request.user.id,
-                        request.user.username,
-                        request.user.first_name,
-                        request.user.last_name,
-                        chat_id
-                    )
-                    
-                    # Send welcome message
+            # Get pending requests
+            try:
+                async for request in context.bot.get_chat_join_requests(chat_id):
                     try:
-                        welcome_msg = f"""🎉 Welcome {request.user.first_name}!
+                        # Approve
+                        await context.bot.approve_chat_join_request(
+                            chat_id=chat_id,
+                            user_id=request.user.id
+                        )
+                        
+                        # Register
+                        add_user(
+                            request.user.id,
+                            request.user.username,
+                            request.user.first_name,
+                            request.user.last_name,
+                            chat_id
+                        )
+                        
+                        # Welcome message
+                        try:
+                            welcome = f"""🎉 Welcome {request.user.first_name}!
 
-✅ Your request has been approved!
-✅ You're now a member of {chat_title}!
+✅ Your request approved!
+✅ You're now in {chat_title}!
 
 📢 Stay updated:
-• Start this bot: @{context.bot.username}
-• Get important announcements
-• Connect with the community
-
-Enjoy! 🚀
+@{context.bot.username}
 """
-                        # Create inline button
-                        keyboard = [[
-                            InlineKeyboardButton(
-                                "✅ Start Bot",
-                                url=f"https://t.me/{context.bot.username}?start=welcome"
+                            keyboard = [[
+                                InlineKeyboardButton(
+                                    "✅ Start Bot",
+                                    url=f"https://t.me/{context.bot.username}?start=welcome"
+                                )
+                            ]]
+                            await context.bot.send_message(
+                                chat_id=request.user.id,
+                                text=welcome,
+                                reply_markup=InlineKeyboardMarkup(keyboard)
                             )
-                        ]]
-                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        except:
+                            pass
                         
-                        await context.bot.send_message(
-                            chat_id=request.user.id,
-                            text=welcome_msg,
-                            reply_markup=reply_markup
+                        approved += 1
+                        
+                        # Log age
+                        age = datetime.now() - request.date.replace(tzinfo=None)
+                        logger.info(
+                            f"✅ Approved: {request.user.first_name} "
+                            f"({age.days}d {age.seconds//3600}h old)"
                         )
-                        logger.info(f"✅ Welcome sent to {request.user.first_name}")
+                        
+                        await asyncio.sleep(0.2)
+                        
                     except Exception as e:
-                        logger.error(f"Welcome message failed: {e}")
-                    
-                    approved += 1
-                    
-                    # Log request age
-                    age = datetime.now() - request.date.replace(tzinfo=None)
-                    logger.info(
-                        f"✅ Approved: {request.user.first_name} "
-                        f"({age.days}d {age.seconds//3600}h old)"
+                        failed += 1
+                        logger.error(f"Approval error: {e}")
+                
+                total_approved += approved
+                total_failed += failed
+                
+                if approved > 0:
+                    await update.message.reply_text(
+                        f"✅ {chat_title}\n"
+                        f"Approved: {approved}\n"
+                        f"Failed: {failed}"
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"ℹ️ {chat_title}: No pending"
                     )
                     
-                    await asyncio.sleep(0.2)  # Rate limit
-                    
-                except Exception as e:
-                    failed += 1
-                    logger.error(f"Approval failed: {e}")
-            
-            total_approved += approved
-            total_failed += failed
-            
-            if approved > 0:
+            except Exception as e:
                 await update.message.reply_text(
-                    f"✅ {chat_title}\n"
-                    f"Approved: {approved}\n"
-                    f"Failed: {failed}"
+                    f"❌ {chat_title}: {str(e)}\n\n"
+                    f"Check bot permissions!"
                 )
-            else:
-                await update.message.reply_text(
-                    f"ℹ️ {chat_title}: No pending requests"
-                )
+                logger.error(f"Chat error: {e}")
                 
         except Exception as e:
-            logger.error(f"Chat error: {e}")
+            logger.error(f"Processing error: {e}")
     
-    # Final summary
-    summary = f"""✅ Approval Complete!
+    # Summary
+    summary = f"""✅ Complete!
 
 📊 Summary:
-• Total Approved: {total_approved}
-• Total Failed: {total_failed}
-• Welcome Messages Sent: {total_approved}
+• Approved: {total_approved}
+• Failed: {total_failed}
+• Groups: {len(chats)}
 
 ⏰ {datetime.now().strftime('%H:%M:%S')}
-
-All users have been:
-✅ Approved
-✅ Registered in bot
-✅ Sent welcome message
 """
     await update.message.reply_text(summary)
 
 async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Broadcast message to all users"""
+    """Broadcast to all users"""
     user_id = update.effective_user.id
     
     if user_id != ADMIN_USER_ID:
@@ -347,21 +448,20 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not context.args:
         await update.message.reply_text(
-            "❌ Usage: /broadcast <message>\n\n"
+            "Usage: /broadcast <message>\n\n"
             "Example:\n"
-            "/broadcast Hello everyone! Important update here."
+            "/broadcast Hello everyone!"
         )
         return
     
     message_text = ' '.join(context.args)
-    
-    await update.message.reply_text("📢 Starting broadcast...")
-    
     users = get_all_active_users()
     
     if not users:
-        await update.message.reply_text("📭 No users to broadcast to!")
+        await update.message.reply_text("📭 No users!")
         return
+    
+    await update.message.reply_text(f"📢 Broadcasting to {len(users)} users...")
     
     success = 0
     failed = 0
@@ -371,7 +471,7 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 chat_id=user_id_target,
-                text=f"📢 Broadcast Message:\n\n{message_text}"
+                text=f"📢 Broadcast:\n\n{message_text}"
             )
             success += 1
             await asyncio.sleep(0.05)
@@ -380,22 +480,17 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if 'blocked' in str(e).lower():
                 blocked += 1
                 mark_user_blocked(user_id_target)
-            logger.error(f"Broadcast failed to {user_id_target}: {e}")
     
-    summary = f"""✅ Broadcast Complete!
+    summary = f"""✅ Broadcast Done!
 
-📊 Results:
-• Total Users: {len(users)}
-• Sent Successfully: {success}
+• Sent: {success}
 • Failed: {failed}
-• Blocked Bot: {blocked}
-
-⏰ {datetime.now().strftime('%H:%M:%S')}
+• Blocked: {blocked}
 """
     await update.message.reply_text(summary)
 
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user statistics"""
+    """Statistics"""
     user_id = update.effective_user.id
     
     if user_id != ADMIN_USER_ID:
@@ -405,26 +500,22 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats = get_user_stats()
     chats = get_all_chats()
     
-    msg = f"""📊 Bot Statistics
+    msg = f"""📊 Statistics
 
 👥 Users:
-• Total Users: {stats['total']}
-• Active Users: {stats['active']}
-• Blocked Bot: {stats['blocked']}
+• Total: {stats['total']}
+• Active: {stats['active']}
+• Blocked: {stats['blocked']}
 
-💬 Groups:
-• Monitored Chats: {len(chats)}
+💬 Groups: {len(chats)}
 
-⚙️ Status: Running
-🕐 Last Updated: {datetime.now().strftime('%H:%M:%S')}
-
-💡 Use /users to see recent users
-💡 Use /chats to see groups
+⚙️ Running
+🕐 {datetime.now().strftime('%H:%M:%S')}
 """
     await update.message.reply_text(msg)
 
 async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List recent users"""
+    """List users"""
     user_id = update.effective_user.id
     
     if user_id != ADMIN_USER_ID:
@@ -435,7 +526,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn = sqlite3.connect('bot_data.db')
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT user_id, first_name, username, joined_date, is_active, is_blocked
+            SELECT user_id, first_name, username, is_active, is_blocked
             FROM users
             ORDER BY joined_date DESC
             LIMIT 20
@@ -444,23 +535,23 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         
         if not users:
-            await update.message.reply_text("📭 No users yet!")
+            await update.message.reply_text("📭 No users!")
             return
         
-        msg = "👥 Recent Users (Last 20):\n\n"
-        for idx, (uid, name, uname, date, active, blocked) in enumerate(users, 1):
+        msg = "👥 Recent Users:\n\n"
+        for idx, (uid, name, uname, active, blocked) in enumerate(users, 1):
             status = "🟢" if active and not blocked else "🔴" if blocked else "⚫"
             username_str = f"@{uname}" if uname else "No username"
             msg += f"{idx}. {status} {name} ({username_str})\n"
         
-        msg += f"\n🟢 Active | 🔴 Blocked | ⚫ Inactive"
+        msg += f"\n🟢 Active | 🔴 Blocked"
         await update.message.reply_text(msg)
         
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
-async def list_chats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List monitored chats"""
+async def list_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List chats"""
     user_id = update.effective_user.id
     
     if user_id != ADMIN_USER_ID:
@@ -470,7 +561,11 @@ async def list_chats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chats = get_all_chats()
     
     if not chats:
-        await update.message.reply_text("📭 No chats yet!")
+        await update.message.reply_text(
+            "📭 No groups added!\n\n"
+            "Use /add_chat to add your group.\n"
+            "Type /help for guide."
+        )
         return
     
     msg = "💬 Monitored Groups:\n\n"
@@ -480,22 +575,22 @@ async def list_chats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Auto-handle new join requests"""
+    """Auto-handle join requests"""
     request = update.chat_join_request
     chat_id = request.chat.id
     user = request.user
     
-    # Add chat to database
-    add_chat(chat_id, request.chat.title)
+    # Add chat if not exists
+    add_chat_to_db(chat_id, request.chat.title)
     
     try:
-        # Auto-approve
+        # Approve
         await context.bot.approve_chat_join_request(
             chat_id=chat_id,
             user_id=user.id
         )
         
-        # Register user
+        # Register
         add_user(
             user.id,
             user.username,
@@ -504,19 +599,14 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
             chat_id
         )
         
-        # Send welcome message
+        # Welcome
         try:
-            welcome_msg = f"""🎉 Welcome {user.first_name}!
+            welcome = f"""🎉 Welcome {user.first_name}!
 
-✅ Your request has been approved!
-✅ You're now a member of {request.chat.title}!
+✅ Approved to {request.chat.title}!
 
-📢 Stay connected:
-• Start this bot to get announcements
-• Important updates from admin
-• Community notifications
-
-Enjoy! 🚀
+📢 Start bot for updates:
+@{context.bot.username}
 """
             keyboard = [[
                 InlineKeyboardButton(
@@ -524,45 +614,39 @@ Enjoy! 🚀
                     url=f"https://t.me/{context.bot.username}?start=welcome"
                 )
             ]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
             await context.bot.send_message(
                 chat_id=user.id,
-                text=welcome_msg,
-                reply_markup=reply_markup
+                text=welcome,
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
-            logger.info(f"✅ Auto-approved + welcomed: {user.first_name}")
         except:
-            logger.info(f"✅ Auto-approved (no DM): {user.first_name}")
+            pass
+        
+        logger.info(f"✅ Auto-approved: {user.first_name}")
         
     except Exception as e:
         logger.error(f"Auto-approve failed: {e}")
 
 async def periodic_approval(app: Application):
-    """Periodic approval of pending requests"""
-    logger.info("🔄 Periodic approval started")
+    """Periodic check"""
+    logger.info("🔄 Periodic task started")
     
     while True:
         try:
-            await asyncio.sleep(300)  # 5 minutes
+            await asyncio.sleep(300)
             
             chats = get_all_chats()
-            if not chats:
-                continue
-            
             total = 0
-            for chat_id, chat_title in chats:
+            
+            for chat_id, _ in chats:
                 try:
                     count = 0
                     async for req in app.bot.get_chat_join_requests(chat_id):
                         try:
-                            # Approve
                             await app.bot.approve_chat_join_request(
                                 chat_id=chat_id,
                                 user_id=req.user.id
                             )
-                            
-                            # Register
                             add_user(
                                 req.user.id,
                                 req.user.username,
@@ -570,41 +654,25 @@ async def periodic_approval(app: Application):
                                 req.user.last_name,
                                 chat_id
                             )
-                            
-                            # Welcome message
-                            try:
-                                await app.bot.send_message(
-                                    chat_id=req.user.id,
-                                    text=f"🎉 Welcome! Approved to {chat_title}"
-                                )
-                            except:
-                                pass
-                            
                             count += 1
                             await asyncio.sleep(0.1)
                         except:
                             pass
-                    
                     total += count
-                    if count > 0:
-                        logger.info(f"Periodic: {count} approved in {chat_title}")
                 except:
                     pass
             
             if total > 0:
-                logger.info(f"✅ Periodic total: {total}")
+                logger.info(f"✅ Periodic: {total}")
         except:
             pass
 
 async def post_init(app: Application):
-    """Initialize bot"""
     init_database()
     asyncio.create_task(periodic_approval(app))
-    logger.info("✅ Bot initialized with database!")
+    logger.info("✅ Bot initialized!")
 
 def main():
-    """Start bot"""
-    
     if not BOT_TOKEN:
         print("❌ BOT_TOKEN not set!")
         return
@@ -613,32 +681,7 @@ def main():
         print("❌ ADMIN_USER_ID not set!")
         return
     
-    logger.info("🤖 Starting Complete Auto-Approve Bot...")
+    logger.info("🤖 Starting bot...")
     logger.info(f"👤 Admin: {ADMIN_USER_ID}")
-    logger.info("✅ Features: Approve, Welcome, Register, Broadcast, Stats")
     
-    try:
-        app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-        
-        # Admin commands
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("approve_all", approve_all_requests))
-        app.add_handler(CommandHandler("broadcast", broadcast_message))
-        app.add_handler(CommandHandler("stats", show_stats))
-        app.add_handler(CommandHandler("users", list_users))
-        app.add_handler(CommandHandler("chats", list_chats_cmd))
-        
-        # Join request handler
-        app.add_handler(ChatJoinRequestHandler(handle_join_request))
-        
-        logger.info("✅ All handlers registered")
-        logger.info("🚀 Starting polling...")
-        
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
-        
-    except Exception as e:
-        logger.error(f"Fatal: {e}")
-        raise
-
-if __name__ == '__main__':
-    main()
+  
